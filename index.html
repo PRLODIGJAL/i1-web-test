@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>世界名胜 · 交互式地球</title>
+<style>
+  :root {
+    --card-bg: rgba(15, 15, 25, 0.92);
+    --accent: #f0c060;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000010; overflow: hidden;
+    font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    user-select: none; -webkit-user-select: none;
+    cursor: grab;
+  }
+  body:active { cursor: grabbing; }
+  body.pointing { cursor: pointer; }
+  #canvas-container { position: fixed; inset: 0; z-index: 1; }
+  canvas { display: block; }
+
+  #header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+    padding: 18px 28px; display: flex; align-items: center; gap: 12px;
+    pointer-events: none;
+  }
+  #header .logo {
+    font-size: 22px; font-weight: 700; color: #fff;
+    letter-spacing: 2px; text-shadow: 0 0 30px rgba(240,192,96,0.5);
+  }
+  #header .sub {
+    font-size: 13px; color: rgba(255,255,255,0.5); letter-spacing: 1px;
+  }
+
+  /* ── Rotation toggle ── */
+  #rotate-btn {
+    position: fixed; bottom: 36px; right: 36px; z-index: 20;
+    width: 48px; height: 48px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(15,15,25,0.85);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    color: #fff; font-size: 20px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  }
+  #rotate-btn:hover {
+    background: rgba(240,192,96,0.15);
+    border-color: var(--accent);
+  }
+  #rotate-btn.paused {
+    opacity: 0.6;
+    border-color: rgba(255,255,255,0.1);
+  }
+  @media (max-width: 640px) {
+    #rotate-btn { bottom: 20px; right: 16px; width: 42px; height: 42px; font-size: 18px; }
+  }
+
+  #hint {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    z-index: 10; color: rgba(255,255,255,0.4); font-size: 12px;
+    pointer-events: none; transition: opacity 1s;
+  }
+
+  #popup {
+    position: fixed; z-index: 20; pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    width: 340px;
+    background: var(--card-bg);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 16px; overflow: hidden;
+    backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    box-shadow: 0 24px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06) inset;
+  }
+  #popup.visible {
+    opacity: 1; pointer-events: auto;
+  }
+  #popup .img-wrap {
+    width: 100%; height: 190px; overflow: hidden; position: relative;
+    background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+  }
+  #popup .img-wrap img {
+    width: 100%; height: 100%; object-fit: cover;
+    transition: transform 0.6s ease;
+  }
+  #popup:hover .img-wrap img { transform: scale(1.06); }
+  #popup .img-fallback {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 56px; opacity: 0.25;
+  }
+  #popup .info { padding: 16px 20px; }
+  #popup .info h3 { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  #popup .info .location {
+    font-size: 12px; color: var(--accent); letter-spacing: 2px;
+  }
+  #popup .info .desc {
+    font-size: 13px; color: rgba(255,255,255,0.5); margin-top: 6px; line-height: 1.5;
+  }
+  #popup .tail {
+    position: absolute; bottom: -8px; left: 50%; transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 10px solid transparent; border-right: 10px solid transparent;
+    border-top: 10px solid var(--card-bg);
+  }
+
+  #loading {
+    position: fixed; inset: 0; z-index: 100; background: #000010;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.6s;
+  }
+  #loading.hide { opacity: 0; pointer-events: none; }
+  #loading .ring {
+    width: 40px; height: 40px;
+    border: 2px solid rgba(255,255,255,0.1); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 640px) {
+    #popup { width: 270px; }
+    #popup .img-wrap { height: 150px; }
+    #header { padding: 12px 16px; }
+    #header .logo { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="ring"></div></div>
+
+<div id="header">
+  <span class="logo">世界名胜</span>
+  <span class="sub">· 拖动旋转 · 滚轮缩放 · 悬停金色光点探索</span>
+</div>
+
+<div id="hint">🖱 拖动旋转地球 · 滚轮缩放 · 悬停金色光点</div>
+
+<button id="rotate-btn" title="暂停/恢复自动旋转">⏸</button>
+
+<div id="canvas-container"></div>
+
+<div id="popup">
+  <div class="img-wrap">
+    <img id="popup-img" src="" alt="" />
+    <div class="img-fallback" id="popup-icon"></div>
+  </div>
+  <div class="info">
+    <h3 id="popup-title"></h3>
+    <div class="location" id="popup-location"></div>
+    <div class="desc" id="popup-desc"></div>
+  </div>
+</div>
+
+<link rel="preload" href="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" as="script" crossorigin="anonymous">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ═══════════════ WORLD LANDMARKS ═══════════════
+// Images: Wikipedia Special:FilePath always returns the correct lead image
+function wikiImg(title, width) {
+  return `https://en.wikipedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}?width=${width}`;
+}
+
+const spots = [
+  // ── Africa ──
+  { name:'吉萨金字塔', location:'埃及 · 吉萨', lat:29.979, lng:31.134, emoji:'🔺',
+    desc:'四千五百年屹立沙漠，古埃及法老的永恒陵寝，世界七大奇迹仅存者。',
+    img: wikiImg('Great_Pyramid_of_Giza', 600) },
+
+  // ── Europe ──
+  { name:'埃菲尔铁塔', location:'法国 · 巴黎', lat:48.858, lng:2.294, emoji:'🗼',
+    desc:'巴黎的钢铁地标，为 1889 年世博会建造，每年迎接七百万游客。',
+    img: wikiImg('Eiffel_Tower', 600) },
+  { name:'罗马斗兽场', location:'意大利 · 罗马', lat:41.890, lng:12.492, emoji:'🏟️',
+    desc:'古罗马帝国荣耀的见证，两千年前八万观众在此观看角斗竞技。',
+    img: wikiImg('Colosseum', 600) },
+
+  // ── Asia ──
+  { name:'长城', location:'中国 · 北京', lat:40.432, lng:116.570, emoji:'🏔️',
+    desc:'万里巨龙蜿蜒山脊，两千年华夏文明的防御奇迹。',
+    img: wikiImg('Great_Wall_of_China', 600) },
+  { name:'泰姬陵', location:'印度 · 阿格拉', lat:27.175, lng:78.042, emoji:'🕌',
+    desc:'纯白大理石筑成的爱情丰碑，莫卧儿皇帝为亡妻所建的陵墓。',
+    img: wikiImg('Taj_Mahal', 600) },
+  { name:'吴哥窟', location:'柬埔寨 · 暹粒', lat:13.413, lng:103.867, emoji:'🏯',
+    desc:'高棉帝国的心脏，世界上最大的宗教建筑群，密林中的石雕史诗。',
+    img: wikiImg('Angkor_Wat', 600) },
+  { name:'富士山', location:'日本 · 本州', lat:35.361, lng:138.727, emoji:'🗻',
+    desc:'日本最高峰，终年积雪的完美锥形火山，大和民族的精神象征。',
+    img: wikiImg('Mount_Fuji', 600) },
+
+  // ── Middle East ──
+  { name:'佩特拉古城', location:'约旦 · 马安', lat:30.329, lng:35.444, emoji:'🪨',
+    desc:'玫瑰红色的岩石中雕凿出的纳巴泰王国都城，沙漠中的奇迹。',
+    img: wikiImg('Petra', 600) },
+
+  // ── North America ──
+  { name:'自由女神像', location:'美国 · 纽约', lat:40.689, lng:-74.045, emoji:'🗽',
+    desc:'法国赠予美国的百年礼物，象征自由与民主，矗立纽约港入口。',
+    img: wikiImg('Statue_of_Liberty', 600) },
+
+  // ── South America ──
+  { name:'马丘比丘', location:'秘鲁 · 库斯科', lat:-13.163, lng:-72.546, emoji:'⛰️',
+    desc:'印加帝国失落的天空之城，海拔两千米的云中遗迹。',
+    img: wikiImg('Machu_Picchu', 600) },
+  { name:'基督救世主像', location:'巴西 · 里约热内卢', lat:-22.952, lng:-43.211, emoji:'✝️',
+    desc:'张开双臂拥抱里约的巨型雕像，世界新七大奇迹之一。',
+    img: wikiImg('Christ_the_Redeemer_(statue)', 600) },
+
+  // ── Oceania ──
+  { name:'悉尼歌剧院', location:'澳大利亚 · 悉尼', lat:-33.857, lng:151.215, emoji:'⛵',
+    desc:'贝壳风帆般的建筑奇迹，悉尼港最耀眼的白色地标。',
+    img: wikiImg('Sydney_Opera_House', 600) },
+];
+
+// ═══════════════ 3D SCENE ═══════════════
+const container = document.getElementById('canvas-container');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(42, container.clientWidth / container.clientHeight, 0.5, 100);
+camera.position.set(0, 2, 14);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(container.clientWidth, container.clientHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+container.appendChild(renderer.domElement);
+
+// ── Orbit Controls ──
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.3;
+controls.minDistance = 6;
+controls.maxDistance = 25;
+controls.maxPolarAngle = Math.PI * 0.85;
+controls.target.set(0, 0, 0);
+controls.update();
+
+// ── Rotation toggle button ──
+const rotateBtn = document.getElementById('rotate-btn');
+let isRotating = true;
+
+function updateRotateBtn() {
+  if (isRotating) {
+    rotateBtn.textContent = '⏸';
+    rotateBtn.classList.remove('paused');
+    rotateBtn.title = '暂停自动旋转';
+  } else {
+    rotateBtn.textContent = '▶';
+    rotateBtn.classList.add('paused');
+    rotateBtn.title = '恢复自动旋转';
+  }
+}
+
+rotateBtn.addEventListener('click', () => {
+  isRotating = !isRotating;
+  controls.autoRotate = isRotating;
+  updateRotateBtn();
+});
+
+// ── Starfield ──
+const starsGeo = new THREE.BufferGeometry();
+const starCount = 1800;
+const starVerts = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  const r = 35 + Math.random() * 25;
+  const theta = Math.random() * Math.PI * 2;
+  const phi = Math.acos(2 * Math.random() - 1);
+  starVerts[i*3]   = r * Math.sin(phi) * Math.cos(theta);
+  starVerts[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+  starVerts[i*3+2] = r * Math.cos(phi);
+}
+starsGeo.setAttribute('position', new THREE.BufferAttribute(starVerts, 3));
+scene.add(new THREE.Points(starsGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.04, transparent: true, opacity: 0.7 })));
+
+// ── Earth Globe ──
+const earthGroup = new THREE.Group();
+scene.add(earthGroup);
+
+const earthGeo = new THREE.SphereGeometry(5, 96, 72);
+const texLoader = new THREE.TextureLoader();
+const earthTex = texLoader.load(
+  'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg',
+  () => { document.getElementById('loading').classList.add('hide'); }
+);
+earthTex.colorSpace = THREE.SRGBColorSpace;
+const earth = new THREE.Mesh(earthGeo, new THREE.MeshStandardMaterial({
+  map: earthTex, roughness: 0.72, metalness: 0.05,
+}));
+earthGroup.add(earth);
+
+// ── Atmosphere glow ──
+const glowGeo = new THREE.SphereGeometry(5.08, 72, 48);
+const glowMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uColor: { value: new THREE.Color('#4488cc') },
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vNormal; varying vec3 vPosition;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vNormal = normalize(mat3(modelMatrix) * normal);
+      vPosition = wp.xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vNormal; varying vec3 vPosition;
+    uniform vec3 uColor;
+    void main() {
+      float rim = 1.0 - abs(dot(normalize(cameraPosition - vPosition), vNormal));
+      gl_FragColor = vec4(uColor, pow(rim, 3.2) * 0.45);
+    }
+  `,
+  transparent: true, depthWrite: false,
+});
+earthGroup.add(new THREE.Mesh(glowGeo, glowMat));
+
+// ── Lighting (day/night contrast) ──
+// Strong directional = bright dayside. Weak ambient = dark nightside → clear contrast.
+scene.add(new THREE.AmbientLight(0x224466, 0.9));
+const sunLight = new THREE.DirectionalLight(0xffffff, 4.5); sunLight.position.set(8, 3, 5); scene.add(sunLight);
+const fillLight = new THREE.DirectionalLight(0x335577, 0.5); fillLight.position.set(-4, -1, -6); scene.add(fillLight);
+
+// ── Marker system ──
+function latLngToVec3(lat, lng, radius) {
+  const phi = (90 - lat) * (Math.PI / 180);
+  const theta = (lng + 180) * (Math.PI / 180);
+  return new THREE.Vector3(
+    -radius * Math.sin(phi) * Math.cos(theta),
+     radius * Math.cos(phi),
+     radius * Math.sin(phi) * Math.sin(theta),
+  );
+}
+
+const markers = [];
+const markerGroup = new THREE.Group();
+earthGroup.add(markerGroup);
+
+spots.forEach((spot, i) => {
+  const pos = latLngToVec3(spot.lat, spot.lng, 5.03);
+
+  // Outer glow ring
+  const ringGeo = new THREE.RingGeometry(0.06, 0.12, 32);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xf0a030, side: THREE.DoubleSide, transparent: true,
+    opacity: 0.75, depthTest: false,
+  });
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  ring.position.copy(pos);
+  ring.lookAt(new THREE.Vector3(0, 0, 0));
+  ring.userData = { spotIndex: i, type: 'marker' };
+  markerGroup.add(ring);
+
+  // Center dot
+  const dotGeo = new THREE.SphereGeometry(0.045, 16, 16);
+  const dotMat = new THREE.MeshBasicMaterial({ color: 0xffcc66, depthTest: false });
+  const dot = new THREE.Mesh(dotGeo, dotMat);
+  dot.position.copy(pos);
+  dot.userData = { spotIndex: i, type: 'marker' };
+  markerGroup.add(dot);
+
+  markers.push({ ring, dot, spotIndex: i });
+});
+
+// ═══════════════ RAYCASTER ═══════════════
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const allMarkerObjs = markers.flatMap(m => [m.ring, m.dot]);
+let hoveredMarker = null;
+
+function getIntersections(event) {
+  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  return raycaster.intersectObjects(allMarkerObjs);
+}
+
+// ═══════════════ POPUP CARD ═══════════════
+const popup     = document.getElementById('popup');
+const popupImg  = document.getElementById('popup-img');
+const popupIcon = document.getElementById('popup-icon');
+const popupTitle   = document.getElementById('popup-title');
+const popupLoc     = document.getElementById('popup-location');
+const popupDesc    = document.getElementById('popup-desc');
+let activeSpotIndex = -1;
+
+function showPopup(idx, sx, sy) {
+  if (activeSpotIndex === idx) return;
+  activeSpotIndex = idx;
+  const s = spots[idx];
+  popupTitle.textContent = s.name;
+  popupLoc.textContent = s.location;
+  popupDesc.textContent = s.desc;
+  popupIcon.textContent = s.emoji;
+  popupImg.src = s.img;
+  popupImg.style.display = 'block';
+
+  // ── Position right next to cursor (like a tooltip) ──
+  const ww = window.innerWidth;
+  const wh = window.innerHeight;
+  const pw = popup.offsetWidth || 340;
+  const ph = popup.offsetHeight || 300;
+  const gap = 14;
+
+  // Default: to the right of cursor, vertically centered on it
+  let px = sx + gap;
+  let py = sy - ph / 2;
+
+  // Flip to left if too close to right edge
+  if (px + pw > ww - 20) {
+    px = sx - pw - gap;
+  }
+  // If still not fitting (very narrow), try above
+  if (px < 10) { px = 10; }
+
+  // Clamp vertical so popup doesn't go off-screen
+  if (py < 16) py = 16;
+  if (py + ph > wh - 16) py = wh - ph - 16;
+
+  popup.style.left = px + 'px';
+  popup.style.top  = py + 'px';
+  popup.style.transform = 'none';
+
+  popup.classList.add('visible');
+  document.body.classList.add('pointing');
+}
+
+function hidePopup() {
+  activeSpotIndex = -1;
+  popup.classList.remove('visible');
+  document.body.classList.remove('pointing');
+}
+
+// ═══════════════ MOUSE EVENTS ═══════════════
+window.addEventListener('pointermove', (e) => {
+  const hits = getIntersections(e);
+  if (hits.length > 0) {
+    const idx = hits[0].object.userData.spotIndex;
+    if (idx !== undefined && idx !== activeSpotIndex) {
+      if (hoveredMarker !== null && hoveredMarker !== idx) {
+        markers[hoveredMarker].ring.material.opacity = 0.75;
+        markers[hoveredMarker].ring.scale.set(1, 1, 1);
+      }
+      hoveredMarker = idx;
+      markers[idx].ring.material.opacity = 1;
+      markers[idx].ring.scale.set(1.5, 1.5, 1);
+      showPopup(idx, e.clientX, e.clientY);
+    }
+  } else {
+    if (hoveredMarker !== null) {
+      markers[hoveredMarker].ring.material.opacity = 0.75;
+      markers[hoveredMarker].ring.scale.set(1, 1, 1);
+      hoveredMarker = null;
+    }
+    hidePopup();
+  }
+});
+
+// Click for pulse feedback
+window.addEventListener('click', (e) => {
+  const hits = getIntersections(e);
+  if (hits.length > 0) {
+    const idx = hits[0].object.userData.spotIndex;
+    if (idx !== undefined) {
+      markers[idx].ring.material.color.set(0xff6644);
+      setTimeout(() => { markers[idx].ring.material.color.set(0xf0a030); }, 400);
+    }
+  }
+});
+
+// ═══════════════ RESIZE ═══════════════
+window.addEventListener('resize', () => {
+  camera.aspect = container.clientWidth / container.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(container.clientWidth, container.clientHeight);
+});
+
+// ═══════════════ ANIMATION LOOP ═══════════════
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  controls.update();
+
+  // ── Back-face dimming + pulse ──
+  const camDir = camera.position.clone().normalize();
+  markers.forEach((m, i) => {
+    // Pulse
+    m.dot.scale.setScalar(1 + Math.sin(t * 2.5 + i * 1.7) * 0.25);
+
+    // Dim markers on the back side of the globe (skip hovered)
+    if (hoveredMarker !== i) {
+      const markerDir = m.ring.position.clone().normalize();
+      const dot = camDir.dot(markerDir);
+      const visibility = 0.15 + 0.85 * Math.max(0, (dot + 0.15) / 0.5);
+      const clamped = Math.min(1, Math.max(0.15, visibility));
+      m.ring.material.opacity = clamped * 0.8;
+      m.dot.material.opacity  = clamped;
+      m.ring.scale.set(1, 1, 1);
+    }
+  });
+
+  renderer.render(scene, camera);
+
+  // Fade hint after 8 seconds
+  const hint = document.getElementById('hint');
+  if (t > 8 && hint.style.opacity !== '0') {
+    hint.style.transition = 'opacity 1.5s';
+    hint.style.opacity = '0';
+  }
+}
+animate();
+</script>
+</body>
+</html>

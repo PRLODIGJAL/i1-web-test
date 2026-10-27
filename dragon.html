@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dragon</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; cursor: grab; font-family: 'Georgia','Songti SC',serif; }
+  body:active { cursor: grabbing; }
+  body::after { content:''; position:fixed; inset:0; background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,0.55) 100%); pointer-events:none; z-index:1; }
+  canvas { display: block; }
+  #hint { position:fixed; bottom:28px; width:100%; text-align:center; color:rgba(255,255,255,0.35); font-size:12px; letter-spacing:3px; pointer-events:none; z-index:2; text-transform:uppercase; }
+</style>
+</head>
+<body>
+<div id="hint">Drag to orbit &bull; Scroll to zoom &bull; Right-drag to pan</div>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── SCENE ──
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x050510);
+scene.fog = new THREE.FogExp2(0x050510, 0.00025);
+const camera = new THREE.PerspectiveCamera(48, innerWidth/innerHeight, 0.1, 80);
+camera.position.set(7, 3.5, 9);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.domElement);
+
+// ── LIGHTING ──
+scene.add(new THREE.AmbientLight(0x1a1a3a, 0.6));
+const keyLight = new THREE.DirectionalLight(0xffeedd, 4);
+keyLight.position.set(5, 8, 5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.camera.near = 0.5; keyLight.shadow.camera.far = 30;
+keyLight.shadow.camera.left = -10; keyLight.shadow.camera.right = 10;
+keyLight.shadow.camera.top = 10; keyLight.shadow.camera.bottom = -10;
+keyLight.shadow.bias = -0.0001;
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x4466aa, 2.5);
+rimLight.position.set(-4, 1, -6); scene.add(rimLight);
+const underLight = new THREE.DirectionalLight(0x331111, 1.5);
+underLight.position.set(0, -2, 2); scene.add(underLight);
+const fireLight = new THREE.PointLight(0xff4400, 0, 10, 1.5);
+scene.add(fireLight);
+
+// ── CONTROLS ──
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.2, 0);
+controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.minDistance = 4; controls.maxDistance = 18;
+controls.maxPolarAngle = Math.PI * 0.78; controls.minPolarAngle = 0.2;
+controls.update();
+
+// ── TEXTURE HELPER ──
+function glowTex(inner, outer) {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(64,64,0,64,64,64);
+  g.addColorStop(0,inner); g.addColorStop(0.15,inner); g.addColorStop(0.4,outer);
+  g.addColorStop(0.7,'rgba(0,0,0,0.1)'); g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0,0,128,128);
+  return new THREE.CanvasTexture(c);
+}
+
+// ── TAPERED TUBE ──
+function taperedTube(curve, segs, rFn, rSegs=20) {
+  const pos=[], idx=[], vpr=rSegs+1;
+  for(let i=0;i<=segs;i++){
+    const t=i/segs, pt=curve.getPointAt(t), r=rFn(t), tg=curve.getTangentAt(t).normalize();
+    const up=new THREE.Vector3(0,1,0);
+    const N=new THREE.Vector3().crossVectors(tg,up).normalize();
+    if(N.length()<0.01) N.set(1,0,0);
+    const B=new THREE.Vector3().crossVectors(tg,N).normalize();
+    N.crossVectors(B,tg).normalize();
+    for(let j=0;j<=rSegs;j++){
+      const a=(j/rSegs)*Math.PI*2, cx=Math.cos(a), sx=Math.sin(a);
+      pos.push(pt.x+(N.x*cx+B.x*sx)*r, pt.y+(N.y*cx+B.y*sx)*r, pt.z+(N.z*cx+B.z*sx)*r);
+    }
+  }
+  for(let i=0;i<segs;i++) for(let j=0;j<rSegs;j++){
+    const a=i*vpr+j, b=a+1, c=a+vpr, d=c+1; idx.push(a,b,d,a,d,c);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setIndex(idx); g.computeVertexNormals(); return g;
+}
+
+// ── CURVE FRAME ──
+function curveFrame(curve,t){
+  const tg=curve.getTangentAt(t).normalize(), up=new THREE.Vector3(0,1,0);
+  const rt=new THREE.Vector3().crossVectors(tg,up).normalize();
+  if(rt.length()<0.01) rt.set(1,0,0);
+  const u=new THREE.Vector3().crossVectors(rt,tg).normalize();
+  return {pos:curve.getPointAt(t),tangent:tg,right:rt,up:u};
+}
+
+// ── STARS ──
+const starsGeo=new THREE.BufferGeometry();
+const sc=1200, sp=new Float32Array(sc*3);
+for(let i=0;i<sc;i++){
+  const th=Math.random()*Math.PI*2, ph=Math.acos(2*Math.random()-1), r=25+Math.random()*25;
+  sp[i*3]=Math.cos(th)*Math.sin(ph)*r; sp[i*3+1]=Math.sin(th)*Math.sin(ph)*r; sp[i*3+2]=Math.cos(ph)*r;
+}
+starsGeo.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));
+scene.add(new THREE.Points(starsGeo,new THREE.PointsMaterial({color:0xffffff,size:0.04,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false})));
+
+// ── AMBIENT EMBERS ──
+const embGeo=new THREE.BufferGeometry(), ec=200, ep=new Float32Array(ec*3);
+for(let i=0;i<ec;i++){ ep[i*3]=(Math.random()-0.5)*15; ep[i*3+1]=Math.random()*8; ep[i*3+2]=(Math.random()-0.5)*15; }
+embGeo.setAttribute('position',new THREE.Float32BufferAttribute(ep,3));
+const embers=new THREE.Points(embGeo,new THREE.PointsMaterial({color:0xff6622,size:0.03,map:glowTex('rgba(255,180,40,1)','rgba(255,60,0,0.6)'),blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:0.5}));
+scene.add(embers);
+
+// ── SPINE CURVE ──
+const spinePts=[
+  new THREE.Vector3(0,4.8,3.0), new THREE.Vector3(0,4.0,2.2), new THREE.Vector3(0,3.0,1.0),
+  new THREE.Vector3(-0.4,2.0,0.0), new THREE.Vector3(0.3,1.2,-1.2), new THREE.Vector3(1.2,0.5,-2.5),
+  new THREE.Vector3(2.2,0.1,-3.2), new THREE.Vector3(3.0,0.0,-2.8),
+];
+const spineCurve=new THREE.CatmullRomCurve3(spinePts,false,'catmullrom',0.6);
+const dragon=new THREE.Group(); scene.add(dragon);
+
+// ── MATERIALS ──
+const bodyMat=new THREE.MeshStandardMaterial({color:0x1a1018,roughness:0.5,metalness:0.35});
+const spikeMat=new THREE.MeshStandardMaterial({color:0x2a2015,roughness:0.55,metalness:0.15});
+const headMat=new THREE.MeshStandardMaterial({color:0x1a1018,roughness:0.45,metalness:0.35});
+const boneMat=new THREE.MeshStandardMaterial({color:0x3a3025,roughness:0.55,metalness:0.1});
+const eyeMat=new THREE.MeshStandardMaterial({color:0xff3300,roughness:0.1,metalness:0.1,emissive:0xff3300,emissiveIntensity:3});
+const wingMat=new THREE.MeshStandardMaterial({color:0x0d0808,roughness:0.75,metalness:0.08,side:THREE.DoubleSide});
+
+// ── BODY ──
+function bodyR(t){
+  if(t<0.04)return 0.22; if(t<0.14)return 0.22+((t-0.04)/0.1)*0.38;
+  if(t<0.25)return 0.60; if(t<0.50)return 0.60-((t-0.25)/0.25)*0.20;
+  if(t<0.72)return 0.40-((t-0.50)/0.22)*0.20; if(t<0.88)return 0.20-((t-0.72)/0.16)*0.13;
+  return 0.07;
+}
+const bodyMesh=new THREE.Mesh(taperedTube(spineCurve,160,bodyR,20),bodyMat);
+bodyMesh.castShadow=bodyMesh.receiveShadow=true; dragon.add(bodyMesh);
+
+// ── SPINE RIDGE ──
+for(let i=0;i<30;i++){
+  const t=0.06+(i/29)*0.82, f=curveFrame(spineCurve,t), r=bodyR(t);
+  const h=0.08+r*1.1, spike=new THREE.Mesh(new THREE.ConeGeometry(r*0.35,h,5,2),spikeMat);
+  spike.position.copy(f.pos).addScaledVector(f.up,r);
+  spike.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0),f.up);
+  spike.castShadow=true; dragon.add(spike);
+}
+
+// ── HEAD ──
+const headGroup=new THREE.Group();
+const hf=curveFrame(spineCurve,0);
+headGroup.position.copy(hf.pos);
+headGroup.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(hf.right,hf.up,hf.tangent));
+
+const skull=new THREE.Mesh(new THREE.SphereGeometry(1,24,20),headMat);
+skull.scale.set(0.33,0.26,0.38); skull.position.set(0,0,0.08); skull.castShadow=true; headGroup.add(skull);
+
+const snout=new THREE.Mesh(new THREE.ConeGeometry(0.28,0.9,16,8),headMat);
+snout.position.set(0,-0.06,0.65); snout.rotation.x=-0.2; snout.castShadow=true; headGroup.add(snout);
+
+const ridge=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.06,0.5),headMat);
+ridge.position.set(0,0.12,0.4); headGroup.add(ridge);
+
+for(let sx=-1;sx<=1;sx+=2){
+  const brow=new THREE.Mesh(new THREE.SphereGeometry(0.12,12,8),headMat);
+  brow.scale.set(0.4,0.25,0.6); brow.position.set(sx*0.2,0.14,0.28); brow.rotation.z=sx*0.35; headGroup.add(brow);
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(0.07,10,10),eyeMat);
+  eye.position.set(sx*0.21,0.06,0.34); headGroup.add(eye);
+  const pupil=new THREE.Mesh(new THREE.SphereGeometry(0.03,6,6),new THREE.MeshBasicMaterial({color:0}));
+  pupil.scale.set(0.4,1,0.5); pupil.position.set(sx*0.21,0.06,0.38); headGroup.add(pupil);
+}
+
+function mkHorn(side){
+  const g=new THREE.Group();
+  const c=new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0,0,0), new THREE.Vector3(side*0.15,0.5,-0.25),
+    new THREE.Vector3(side*0.25,1.1,-0.7), new THREE.Vector3(side*0.20,1.8,-1.2),
+  ]);
+  const m=new THREE.Mesh(new THREE.TubeGeometry(c,24,0.05,8,false),boneMat);
+  m.castShadow=true; g.add(m); return g;
+}
+const lHorn=mkHorn(1); lHorn.position.set(0.2,0.22,-0.05); headGroup.add(lHorn);
+const rHorn=mkHorn(-1); rHorn.position.set(-0.2,0.22,-0.05); headGroup.add(rHorn);
+
+const jaw=new THREE.Mesh(new THREE.BoxGeometry(0.25,0.08,0.5),headMat);
+jaw.position.set(0,-0.18,0.45); jaw.rotation.x=0.25; headGroup.add(jaw);
+
+const mouthInterior=new THREE.Mesh(new THREE.SphereGeometry(0.12,8,8),new THREE.MeshBasicMaterial({color:0x110000}));
+mouthInterior.position.set(0,-0.12,0.85); mouthInterior.scale.set(0.6,0.3,0.25); headGroup.add(mouthInterior);
+dragon.add(headGroup);
+
+// ── WINGS ──
+function wingShape(){
+  const s=new THREE.Shape();
+  s.moveTo(0,0); s.lineTo(1.0,0.55); s.lineTo(3.2,0.35);
+  s.quadraticCurveTo(3.4,0.0,3.0,-0.35); s.quadraticCurveTo(2.5,-0.55,1.8,-0.55);
+  s.quadraticCurveTo(1.0,-0.4,0.5,-0.25); s.lineTo(0,-0.2); s.closePath();
+  return s;
+}
+function wingBones(){
+  const g=new THREE.Group(), bg=new THREE.CylinderGeometry(0.025,0.025,1,6);
+  const arm=new THREE.Mesh(bg,boneMat); arm.scale.set(1,3.5,1); arm.position.set(1.6,0.25,0); arm.rotation.z=-0.08; arm.castShadow=true; g.add(arm);
+  for(const [x,y,l,rz] of [[2.8,-0.1,1.8,-0.25],[2.3,-0.25,1.6,-0.4],[1.5,-0.3,1.4,-0.5]]){
+    const f=new THREE.Mesh(bg,boneMat); f.scale.set(1,l,1); f.position.set(x,y,0); f.rotation.z=rz; f.castShadow=true; g.add(f);
+  }
+  return g;
+}
+const wf=curveFrame(spineCurve,0.16);
+const wingGroup=new THREE.Group();
+wingGroup.position.copy(wf.pos);
+wingGroup.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(wf.right.clone(),wf.up.clone(),wf.tangent.clone()));
+function mkWing(mirror){
+  const g=new THREE.Group();
+  const m=new THREE.Mesh(new THREE.ShapeGeometry(wingShape()),wingMat);
+  m.rotation.x=-0.15; m.castShadow=true; g.add(m); g.add(wingBones());
+  if(mirror) g.scale.x=-1; return g;
+}
+wingGroup.add(mkWing(false)); wingGroup.add(mkWing(true));
+dragon.add(wingGroup);
+
+// ── TAIL SPADE ──
+const tf=curveFrame(spineCurve,1.0), tailGroup=new THREE.Group();
+tailGroup.position.copy(tf.pos);
+tailGroup.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(tf.right,tf.up,tf.tangent));
+const spadeShape=new THREE.Shape();
+spadeShape.moveTo(0,0); spadeShape.lineTo(0.25,0.5);
+spadeShape.quadraticCurveTo(0,0.7,0,0.7); spadeShape.quadraticCurveTo(0,0.7,-0.25,0.5); spadeShape.closePath();
+const spade=new THREE.Mesh(new THREE.ShapeGeometry(spadeShape),new THREE.MeshStandardMaterial({color:0x1a1018,roughness:0.5,metalness:0.3,side:THREE.DoubleSide}));
+spade.rotation.x=Math.PI/2; tailGroup.add(spade); dragon.add(tailGroup);
+
+// ── FIRE PARTICLES ──
+const MAX=450;
+const fPos=new Float32Array(MAX*3), fCol=new Float32Array(MAX*3), fSiz=new Float32Array(MAX);
+const fVel=Array.from({length:MAX},()=>new THREE.Vector3());
+const fLife=new Float32Array(MAX), fMaxLife=new Float32Array(MAX);
+for(let i=0;i<MAX;i++){ fPos[i*3+1]=-999; fSiz[i]=0; fLife[i]=0; }
+
+const fGeo=new THREE.BufferGeometry();
+fGeo.setAttribute('position',new THREE.Float32BufferAttribute(fPos,3));
+fGeo.setAttribute('color',new THREE.Float32BufferAttribute(fCol,3));
+fGeo.setAttribute('size',new THREE.Float32BufferAttribute(fSiz,1));
+const fTex=glowTex('rgba(255,255,240,1)','rgba(255,100,0,0.5)');
+const firePoints=new THREE.Points(fGeo,new THREE.PointsMaterial({size:0.25,map:fTex,blending:THREE.AdditiveBlending,depthWrite:false,vertexColors:true,transparent:true,opacity:0.9}));
+scene.add(firePoints);
+
+// ── MOUTH WORLD POS ──
+function mouthWorld(){
+  const local=new THREE.Vector3(0,-0.12,0.88);
+  return { pos: local.applyMatrix4(headGroup.matrixWorld), dir: hf.tangent.clone().normalize() };
+}
+
+// ── ANIMATION ──
+const clock=new THREE.Clock(); let tAcc=0;
+
+(function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.1); tAcc+=dt; controls.update();
+
+  // Sway
+  bodyMesh.position.x=Math.sin(tAcc*1.3)*0.04;
+  bodyMesh.position.z=Math.cos(tAcc*0.91)*0.04;
+
+  // Wing flap
+  wingGroup.rotation.z+=Math.sin(tAcc*1.5)*0.0012;
+
+  // Embers
+  const eP=embers.geometry.attributes.position.array;
+  for(let i=0;i<ec;i++){
+    eP[i*3+1]+=dt*(0.15+Math.random()*0.1);
+    eP[i*3]+=dt*(Math.random()-0.5)*0.3; eP[i*3+2]+=dt*(Math.random()-0.5)*0.3;
+    if(eP[i*3+1]>8){ eP[i*3+1]=0; eP[i*3]=(Math.random()-0.5)*15; eP[i*3+2]=(Math.random()-0.5)*15; }
+  }
+  embers.geometry.attributes.position.needsUpdate=true;
+
+  // Fire spawn
+  const m=mouthWorld(), mPos=m.pos, mDir=m.dir;
+  let left=8;
+  for(let i=0;i<MAX&&left>0;i++){
+    if(fLife[i]<=0){
+      fPos[i*3]=mPos.x+(Math.random()-0.5)*0.12;
+      fPos[i*3+1]=mPos.y+(Math.random()-0.5)*0.12;
+      fPos[i*3+2]=mPos.z+(Math.random()-0.5)*0.12;
+      const sp=0.25;
+      fVel[i].set(mDir.x+(Math.random()-0.5)*sp,mDir.y+(Math.random()-0.5)*sp+0.15,mDir.z+(Math.random()-0.5)*sp);
+      fVel[i].normalize().multiplyScalar(2.5+Math.random()*5);
+      fMaxLife[i]=0.8+Math.random()*2.2; fLife[i]=fMaxLife[i];
+      fSiz[i]=0.06+Math.random()*0.22; left--;
+    }
+  }
+
+  // Fire update
+  for(let i=0;i<MAX;i++){
+    if(fLife[i]>0){
+      fLife[i]-=dt; const t=1-fLife[i]/fMaxLife[i], i3=i*3;
+      fPos[i3]+=fVel[i].x*dt; fPos[i3+1]+=fVel[i].y*dt; fPos[i3+2]+=fVel[i].z*dt;
+      fVel[i].multiplyScalar(1-1.8*dt); fVel[i].y+=0.6*dt;
+      fVel[i].x+=(Math.random()-0.5)*6*dt; fVel[i].z+=(Math.random()-0.5)*6*dt;
+      fSiz[i]*=(1-dt*0.4);
+
+      if(t<0.15){ fCol[i3]=1; fCol[i3+1]=0.95; fCol[i3+2]=0.7; }
+      else if(t<0.4){ const lt=(t-0.15)/0.25; fCol[i3]=1; fCol[i3+1]=0.95-lt*0.5; fCol[i3+2]=0.7-lt*0.4; }
+      else if(t<0.7){ const lt=(t-0.4)/0.3; fCol[i3]=1-lt*0.3; fCol[i3+1]=0.45-lt*0.3; fCol[i3+2]=0.3*(1-lt); }
+      else{ const f=1-(t-0.7)/0.3; fCol[i3]=0.7*f; fCol[i3+1]=0.15*f; fCol[i3+2]=0; }
+
+      if(fLife[i]<=0){ fPos[i3+1]=-999; fSiz[i]=0; }
+    }
+  }
+  fGeo.attributes.position.needsUpdate=true;
+  fGeo.attributes.color.needsUpdate=true;
+  fGeo.attributes.size.needsUpdate=true;
+
+  // Fire light
+  fireLight.intensity=20+Math.random()*25+Math.sin(tAcc*12)*8;
+  fireLight.position.copy(mPos);
+
+  // Eye pulse
+  eyeMat.emissiveIntensity=2.5+Math.sin(tAcc*3)*0.8;
+
+  renderer.render(scene,camera);
+})();
+
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
